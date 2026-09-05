@@ -37,6 +37,10 @@ SIZE="${SIZE:-3000000}"       # corpus characters
 CHARS="${CHARS:-40000}"       # max chars per llm_query slice
 STEPS="${STEPS:-12}"
 SUBCALLS="${SUBCALLS:-8}"
+TASK="${TASK:-hop}"           # hop = 3-hop chain | count = whole-document sweep
+MAXDEPTH="${MAXDEPTH:-1}"     # how deep llm_query(recurse=True) may nest
+SUBMODEL="${SUBMODEL:-}"      # different model for sub-calls (default: $MODEL)
+COMPARE="${COMPARE:-}"        # non-empty -> also run the vanilla baseline
 
 # A 4B model in bf16: ~8 GB of weights, plus KV for one MAXLEN sequence, plus
 # ~2 GB of activations and non-torch overhead. The root never holds the document
@@ -127,6 +131,16 @@ port_free() {
     ! curl -sf -m 3 "http://localhost:$1/v1/models" >/dev/null 2>&1
 }
 
+# One place the CLI flags are built, so `offline`, `run` and `auto` cannot
+# disagree about what a given environment variable means.
+cli_flags() {
+    printf '%s\0' --size "$SIZE" --chars "$CHARS" --steps "$STEPS" \
+        --sub-calls "$SUBCALLS" --task "$TASK" --max-depth "$MAXDEPTH"
+    [ -n "$SUBMODEL" ] && printf '%s\0' --sub-model "$SUBMODEL"
+    [ -n "$COMPARE" ] && printf '%s\0' --compare
+    return 0
+}
+
 case "${1:-}" in auto | offline | serve | run | sweep | trace | guards | deepdive) ;;
 *) echo "usage: $0 {auto|offline|serve|run|sweep|trace|guards|deepdive}" >&2; exit 2 ;;
 esac
@@ -189,7 +203,7 @@ offline)
     # Stdlib only. No venv, no GPU, no proxy, no quota. This is the branch that
     # works on a login shell the moment you land on the host.
     echo "== offline: scripted root + extractive sub (machinery only) =="
-    python3 -m rlmadp.cli --size "$SIZE" --chars "$CHARS"
+    xargs -0 python3 -m rlmadp.cli < <(cli_flags)
     ;;
 
 trace)
@@ -256,10 +270,9 @@ auto)
     echo "server ready. running the RLM ..."
 
     OUT="$RESULTS/rlmadp.$HOST.$(date +%Y%m%d-%H%M%S).log"
-    python3 -m rlmadp.cli --vllm \
+    xargs -0 python3 -m rlmadp.cli --vllm \
         --base-url "http://localhost:$PORT/v1" --model "$MODEL" \
-        --size "$SIZE" --chars "$CHARS" --steps "$STEPS" --sub-calls "$SUBCALLS" \
-        2>&1 | tee "$OUT"
+        < <(cli_flags) 2>&1 | tee "$OUT"
     ;;
 
 run)
@@ -276,10 +289,9 @@ run)
     OUT="$RESULTS/rlmadp.$HOST.$(date +%Y%m%d-%H%M%S).log"
     echo "== rlm against $MODEL on localhost:$PORT =="
     echo "   log -> $OUT"
-    python3 -m rlmadp.cli --vllm \
+    xargs -0 python3 -m rlmadp.cli --vllm \
         --base-url "http://localhost:$PORT/v1" --model "$MODEL" \
-        --size "$SIZE" --chars "$CHARS" --steps "$STEPS" --sub-calls "$SUBCALLS" \
-        2>&1 | tee "$OUT"
+        < <(cli_flags) 2>&1 | tee "$OUT"
     ;;
 
 sweep)
