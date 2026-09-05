@@ -117,10 +117,11 @@ MULTI-HOP -- ONE HOP PER CALL
 PARTITION AND MAP
     When the question is about the WHOLE document -- a count, a total, "how
     many", "list all" -- searching cannot answer it. Sweep instead: cut the
-    document into slices of {chunk_chars:,}, ask each the same narrow question,
+    document into slices of {chunk_chars:,} characters, ask each the same narrow
+    question,
     and combine the replies yourself in Python.
 
-        step = {chunk_chars:,}
+        step = {chunk_chars}
         found = []
         for i in range(0, len(context), step):
             r = llm_query("List every X in this text, one per line. "
