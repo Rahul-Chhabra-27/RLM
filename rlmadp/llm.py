@@ -36,7 +36,7 @@ def openai_compatible(
     base_url: str = "http://localhost:8000/v1",
     model: str = "Qwen/Qwen3-4B-Instruct-2507",
     api_key: str = "EMPTY",
-    max_tokens: int = 1024,
+    max_tokens: int = 3072,
     timeout: int = 180,
     sub_model: Optional[str] = None,
 ) -> tuple[Callable, Callable]:
@@ -81,6 +81,12 @@ def openai_compatible(
         return payload["choices"][0]["message"]["content"]
 
     def root(messages: list[dict]) -> str:
+        # The root writes CODE, and a verbose model writes a lot of it. At 1024
+        # tokens a Qwen3-4B first turn was cut off mid-expression, so the block
+        # never got its closing fence, CODE_BLOCK matched nothing, and the turn
+        # was spent on a "no code block found" nudge instead of on the document.
+        # Truncation here is invisible in the transcript -- the reply just looks
+        # like the model forgot to close the fence.
         return _chat(messages, max_tokens, model)
 
     def sub(question: str, text: Optional[str]) -> str:

@@ -25,6 +25,8 @@ def main() -> None:
     ap.add_argument("--size", type=int, default=3_000_000, help="corpus size in characters")
     ap.add_argument("--chars", type=int, default=40_000, help="max chars per llm_query slice")
     ap.add_argument("--steps", type=int, default=12)
+    ap.add_argument("--max-tokens", type=int, default=3072,
+                    help="root completion budget; too low truncates its code block")
     ap.add_argument("--sub-calls", type=int, default=8)
     args = ap.parse_args()
 
@@ -35,7 +37,9 @@ def main() -> None:
     print(f"\ntask: {corpus.TASK}\n" + "=" * 72)
 
     if args.vllm:
-        root, sub = llm.openai_compatible(args.base_url, args.model, sub_model=args.sub_model)
+        root, sub = llm.openai_compatible(args.base_url, args.model,
+                                          max_tokens=args.max_tokens,
+                                          sub_model=args.sub_model)
     else:
         print("[offline mode: scripted root + extractive sub -- machinery only]")
         print("[the root REPLAYS a fixed transcript, so it cannot react to a failed]")
