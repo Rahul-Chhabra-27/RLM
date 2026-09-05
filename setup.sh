@@ -289,8 +289,10 @@ print(f"  tokenizer OK: {type(tok).__name__}, vocab {len(tok)}")
 PYPROBE
 
     echo
-    ok "serve env ready. Activate with:  source $VENV/bin/activate"
-    echo "  Then:  bash run_info.sh serve      (in its own tmux window)"
+    ok "serve env ready."
+    echo "  Next:  bash run_info.sh auto        # server + run, one window"
+    echo "  Or:    bash run_info.sh serve       # server only, to reuse across runs"
+    echo "  (the run side needs no venv; only the server does)"
     ;;
 
 *) usage ;;
