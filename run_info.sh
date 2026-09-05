@@ -45,6 +45,8 @@ SUBCALLS="${SUBCALLS:-8}"
 MAXLEN="${MAXLEN:-16384}"
 ROOT_NEED_MIB="${ROOT_NEED_MIB:-12000}"
 MIN_FREE_MIB="${MIN_FREE_MIB:-14000}"
+# Left unclaimed so a co-tenant growing slightly does not OOM the server.
+HEADROOM_MIB="${HEADROOM_MIB:-2000}"
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$STORE/cache}"
@@ -71,12 +73,28 @@ serve_on() {
     total=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits -i "$idx")
     [ "$free" -ge "$MIN_FREE_MIB" ] || {
         echo "gpu $idx now has only ${free} MiB free (need $MIN_FREE_MIB)" >&2; return 1; }
-    # Ask for a FRACTION sized to what this server actually needs, not for the
-    # whole card. vLLM's default 0.9 would claim ~90% of a shared GPU and make
-    # the host unusable for co-tenants.
-    frac=$(awk -v need="$ROOT_NEED_MIB" -v tot="$total" 'BEGIN{
-        f = need / tot; if (f > 0.9) f = 0.9; if (f < 0.15) f = 0.15; printf "%.3f", f }')
+    # --gpu-memory-utilization is a ceiling on TOTAL DEVICE memory, and vLLM
+    # charges EVERY tenant's bytes against it -- ours and other users' alike.
+    # So the fraction is (what the co-tenants already hold) + (what we want for
+    # ourselves), over total.
+    #
+    # `need/total` alone is WRONG and fails in a way that looks like something
+    # else: on a card holding 25 GB of co-tenants, 12000/49140 = 0.244 tells
+    # vLLM to cap TOTAL device use at 12 GB, which is already exceeded. The 8 GB
+    # of weights still load, then KV allocation gets nothing and the engine dies
+    # with "No available memory for the cache blocks. Try increasing
+    # gpu_memory_utilization" -- pointing at the fraction rather than at the
+    # co-tenants it forgot to count.
+    #
+    # Deriving it from `free` without adding the co-tenants back subtracts them
+    # a SECOND time (free is already net of them), and the KV pool absorbs the
+    # shortfall. Same bug, quieter.
+    frac=$(awk -v f="$free" -v t="$total" -v h="$HEADROOM_MIB" -v n="$ROOT_NEED_MIB" \
+        'BEGIN{ own = f - h; if (own > n) own = n;
+                u = (t - f + own) / t;
+                if (u > 0.90) u = 0.90; if (u < 0.30) u = 0.30; printf "%.3f", u }')
     echo "host $HOST  gpu $idx  free ${free}/${total} MiB  port $port" >&2
+    echo "co-tenants hold $((total - free)) MiB; ours <= $ROOT_NEED_MIB MiB" >&2
     echo "gpu-memory-utilization=$frac  max-model-len=$MAXLEN" >&2
     # --served-model-name pins the name in /v1/models so the readiness check
     # cannot be satisfied by a co-tenant's server holding the port.
