@@ -17,6 +17,9 @@ hf_cache/
 results/
 *.log
 
+# marimo session caches -- regenerated on every run, not source
+__marimo__/
+
 # OS / editor
 .DS_Store
 .idea/
