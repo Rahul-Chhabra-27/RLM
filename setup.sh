@@ -115,8 +115,7 @@ check)
 
     echo
     echo "storage"
-    for pair in "$NAS:NAS allocation -- venv, caches, weights, results" \
-                "$STORE:this project's subtree"; do
+    for pair in "$NAS:NAS allocation -- venv, caches, weights, results"; do
         dir="${pair%%:*}"; what="${pair#*:}"
         if [ -d "$dir" ] && [ -w "$dir" ]; then
             # -c is GNU (the infolab hosts), -f is BSD (a mac running check).
@@ -139,9 +138,15 @@ check)
             warn "$dir exists but is not writable -- $what"
         else
             warn "$dir missing -- $what"
-            echo "        ask your advisor for space here, or set RLMADP_NAS / RLMADP_STORE"
+            echo "        ask your advisor for space here, or set RLMADP_NAS"
         fi
     done
+    # Not a warning: `setup.sh serve` and `run_info.sh` create this themselves.
+    if [ -d "$STORE" ]; then
+        ok "$STORE  -- project subtree"
+    else
+        echo "        $STORE will be created on first \`setup.sh serve\` / run"
+    fi
     # `quota -u` prints nothing on some of these hosts, so a silent result is
     # not proof of a large quota -- it usually means the cap is invisible.
     echo "  \$HOME quota (cap is 30 GB; nothing below should point here):"

@@ -77,13 +77,17 @@ resolve_results() {
 pick_gpu() {
     command -v nvidia-smi >/dev/null 2>&1 || { echo "no nvidia-smi on $HOST" >&2; exit 1; }
     if [ -n "${GPU:-}" ]; then echo "$GPU"; return; fi
-    # Most free memory first, then lowest utilisation. Chosen live, because a
-    # card idle at login may be full by the time you get here.
+    # IDLE first, then most free memory -- not the other way round. Free memory
+    # alone picks a card that has room but is already at 46% utilisation with
+    # someone else's job on it; two jobs then contend for SMs and both run slow.
+    # Utilisation is the signal for "is anyone computing here", free memory only
+    # for "will I fit". Filter on the second, rank on the first. Chosen live,
+    # because a card idle at login may be busy by the time you get here.
     local pick
     pick=$(nvidia-smi --query-gpu=index,memory.free,utilization.gpu \
         --format=csv,noheader,nounits |
-        awk -F', ' -v need="$MIN_FREE_MIB" '$2 >= need {print $2, $3, $1}' |
-        sort -k1,1nr -k2,2n | head -1 | awk '{print $3}')
+        awk -F', ' -v need="$MIN_FREE_MIB" '$2 >= need {print $3, $2, $1}' |
+        sort -k1,1n -k2,2nr | head -1 | awk '{print $3}')
     if [ -z "$pick" ]; then
         echo "no GPU with >= ${MIN_FREE_MIB} MiB free on $HOST:" >&2
         nvidia-smi --query-gpu=index,memory.free,utilization.gpu --format=csv >&2
