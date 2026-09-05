@@ -4,7 +4,7 @@
 #   bash setup.sh check     # environment audit; changes nothing
 #   bash setup.sh net       # activate Internet access via IITB SSO
 #   bash setup.sh core      # verify the zero-dependency path works (no installs)
-#   bash setup.sh serve     # build the vLLM venv on host-local disk
+#   bash setup.sh serve     # build the vLLM venv on the NAS
 #
 # WHY THIS SCRIPT EXISTS. The core of rlmadp is stdlib-only, so `core` needs no
 # venv at all. Everything below is really about the two infolab rules that a
@@ -24,9 +24,15 @@
 set -euo pipefail
 
 HOST="$(hostname -s)"
-LOCAL="${RLMADP_LOCAL:-/mnt/$HOST/data/$USER}"     # host-local scratch: envs, caches
-ARCHIVE="${RLMADP_ARCHIVE:-/mnt/nas/$USER}"        # backed up ~monthly: results
-VENV="${RLMADP_VENV:-$LOCAL/rlmadp-venv}"
+# Everything lives on the NAS. $HOME is capped at 30 GB and a torch+vLLM install
+# plus one model blows straight through it; the NAS allocation is 100 GB.
+NAS="${RLMADP_NAS:-/mnt/nas/$USER}"
+STORE="${RLMADP_STORE:-$NAS/rlmadp}"
+# The venv is per-HOST even on shared storage: infolab hosts carry different
+# NVIDIA/CUDA versions, so one venv cannot serve bee and dog. Naming it by host
+# keeps them apart while still honouring "store on the NAS".
+VENV="${RLMADP_VENV:-$STORE/venv-$HOST}"
+ARCHIVE="${RLMADP_ARCHIVE:-$STORE/results}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODEL="${MODEL:-Qwen/Qwen3-4B-Instruct-2507}"
 
@@ -37,12 +43,22 @@ bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; }
 # --- cache redirection --------------------------------------------------------
 # Exported before ANY install runs. pip/uv/HF all default to $HOME, and doing
 # this afterwards is useless -- the wheels are already on the quota.
-export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$LOCAL/cache}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$STORE/cache}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-$STORE/share}"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$XDG_CACHE_HOME/pip}"
-export HF_HOME="${HF_HOME:-$LOCAL/hf_cache}"
+# UV_CACHE_DIR is the one that bites. uv defaults to ~/.cache/uv and its wheel
+# cache is GB-scale, so `uv venv` / `uv pip install` fills the 30 GB $HOME on
+# its own -- and the failure arrives as "Disk quota exceeded" mid-install.
+# UV_PYTHON_INSTALL_DIR matters for the same reason: uv will happily download a
+# whole interpreter into ~/.local/share/uv/python if the host python is too old.
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$XDG_CACHE_HOME/uv}"
+export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$XDG_DATA_HOME/uv/python}"
+export HF_HOME="${HF_HOME:-$STORE/hf_cache}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
 export TORCH_HOME="${TORCH_HOME:-$XDG_CACHE_HOME/torch}"
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$XDG_CACHE_HOME/vllm}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$XDG_CACHE_HOME/triton}"
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$XDG_CACHE_HOME/inductor}"
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 # nvidia-smi reports PCI order while CUDA defaults to FASTEST_FIRST, so without
@@ -99,8 +115,8 @@ check)
 
     echo
     echo "storage"
-    for pair in "$LOCAL:host-local scratch (envs, caches)" \
-                "$ARCHIVE:archival, backed up ~monthly (results)"; do
+    for pair in "$NAS:NAS allocation -- venv, caches, weights, results" \
+                "$STORE:this project's subtree"; do
         dir="${pair%%:*}"; what="${pair#*:}"
         if [ -d "$dir" ] && [ -w "$dir" ]; then
             # -c is GNU (the infolab hosts), -f is BSD (a mac running check).
@@ -123,13 +139,29 @@ check)
             warn "$dir exists but is not writable -- $what"
         else
             warn "$dir missing -- $what"
-            echo "        ask your advisor for space here, or set RLMADP_LOCAL / RLMADP_ARCHIVE"
+            echo "        ask your advisor for space here, or set RLMADP_NAS / RLMADP_STORE"
         fi
     done
     # `quota -u` prints nothing on some of these hosts, so a silent result is
     # not proof of a large quota -- it usually means the cap is invisible.
-    echo "  \$HOME quota:"
+    echo "  \$HOME quota (cap is 30 GB; nothing below should point here):"
     quota -u "$USER" 2>/dev/null | sed 's/^/    /' || echo "    (quota reported nothing -- assume it is small and tight)"
+
+    # The whole point. uv's wheel cache alone is GB-scale and defaults to
+    # ~/.cache/uv, so a single unset variable is what fills $HOME.
+    echo "  cache redirection:"
+    leaked=0
+    for v in UV_CACHE_DIR UV_PYTHON_INSTALL_DIR PIP_CACHE_DIR HF_HOME HF_HUB_CACHE \
+             XDG_CACHE_HOME XDG_DATA_HOME TORCH_HOME VLLM_CACHE_ROOT \
+             TRITON_CACHE_DIR TORCHINDUCTOR_CACHE_DIR; do
+        eval "val=\${$v:-}"
+        case "$val" in
+        "$HOME"/* | "$HOME") printf '    %-24s %s   <-- LEAKS TO $HOME\n' "$v" "$val"; leaked=1 ;;
+        "") printf '    %-24s (unset)\n' "$v" ;;
+        *) printf '    %-24s %s\n' "$v" "$val" ;;
+        esac
+    done
+    [ "$leaked" -eq 0 ] && ok "no cache points at \$HOME" || bad "a cache points at \$HOME -- it will hit the 30 GB quota"
 
     echo
     echo "gpu"
@@ -197,15 +229,16 @@ core)
 
 serve)
     # Only needed to serve a root model for `run_info.sh run --vllm`.
-    echo "== serve path (vLLM venv on host-local disk) =="
-    [ -d "$LOCAL" ] || { bad "$LOCAL does not exist -- ask your advisor for local space"; exit 1; }
+    echo "== serve path (vLLM venv + all caches on the NAS) =="
+    [ -d "$NAS" ] || { bad "$NAS does not exist -- ask your advisor for NAS space"; exit 1; }
     command -v nvidia-smi >/dev/null 2>&1 || { bad "no GPU on $HOST"; exit 1; }
-    mkdir -p "$LOCAL" "$XDG_CACHE_HOME" "$PIP_CACHE_DIR" "$HF_HOME"
+    mkdir -p "$STORE" "$XDG_CACHE_HOME" "$PIP_CACHE_DIR" "$HF_HOME"
 
     echo "  venv    : $VENV"
     echo "  caches  : $XDG_CACHE_HOME"
+    echo "  uv cache: $UV_CACHE_DIR"
     echo "  HF_HOME : $HF_HOME"
-    df -BG "$LOCAL" | tail -1 | sed 's/^/  disk    : /'
+    df -BG "$STORE" | tail -1 | sed 's/^/  disk    : /'
 
     # uv when the host has it; otherwise venv, with a get-pip bootstrap because
     # some infolab Debian pythons ship without ensurepip.
@@ -221,25 +254,34 @@ serve)
     fi
     # shellcheck disable=SC1091
     source "$VENV/bin/activate"
-    python -m pip install --upgrade pip wheel setuptools
+    # `uv pip` when available: same resolver semantics, far faster, and it
+    # honours UV_CACHE_DIR so the wheels land on the NAS rather than in $HOME.
+    if command -v uv >/dev/null 2>&1; then
+        PIP="uv pip"
+        echo "  installer: uv (cache $UV_CACHE_DIR)"
+    else
+        PIP="python -m pip"
+        python -m pip install --upgrade pip wheel setuptools
+        echo "  installer: pip (cache $PIP_CACHE_DIR)"
+    fi
 
     DRV=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)
     echo "  nvidia driver on $HOST: $DRV"
 
     # rlmadp itself has no dependencies; this is just the import path.
-    pip install -e "$REPO"
+    $PIP install -e "$REPO"
 
     # PIN vLLM. An unpinned resolve grabs a build whose torch targets a newer
     # CUDA than some infolab drivers accept, and it dies at init with "driver
     # too old". 0.8.5.post1 is the version the existing Qwen3 numbers on these
     # hosts were produced with, so results stay comparable.
-    pip install "vllm==${VLLM_VERSION:-0.8.5.post1}"
+    $PIP install "vllm==${VLLM_VERSION:-0.8.5.post1}"
 
     # PIN transformers LAST, so it wins over whatever vLLM pulled in.
     # transformers 5.x removed `all_special_tokens_extended`, which vLLM 0.8.5
     # still calls at tokenizer init -- the server then dies ~5 minutes into
     # startup with an error that reads like a GPU or readiness problem.
-    pip install "transformers==${TRANSFORMERS_VERSION:-4.51.3}"
+    $PIP install "transformers==${TRANSFORMERS_VERSION:-4.51.3}"
 
     NVDIR=$(ls -d /opt/nvidia/hpc_sdk/Linux_x86_64/*/cuda/*/lib64 2>/dev/null | tail -1 || true)
     if [ -n "$NVDIR" ]; then

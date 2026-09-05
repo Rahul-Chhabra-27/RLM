@@ -24,10 +24,11 @@ set -euo pipefail
 HOST="$(hostname -s)"
 MODEL="${MODEL:-Qwen/Qwen3-4B-Instruct-2507}"
 PORT="${PORT:-8000}"
-LOCAL="${RLMADP_LOCAL:-/mnt/$HOST/data/$USER}"
-ARCHIVE="${RLMADP_ARCHIVE:-/mnt/nas/$USER}"
-VENV="${RLMADP_VENV:-$LOCAL/rlmadp-venv}"
-RESULTS="${RESULTS:-$ARCHIVE/rlmadp/results}"
+NAS="${RLMADP_NAS:-/mnt/nas/$USER}"
+STORE="${RLMADP_STORE:-$NAS/rlmadp}"
+VENV="${RLMADP_VENV:-$STORE/venv-$HOST}"
+ARCHIVE="${RLMADP_ARCHIVE:-$STORE/results}"
+RESULTS="${RESULTS:-$ARCHIVE}"
 LOGS="${LOGS:-$RESULTS/logs}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -45,8 +46,10 @@ ROOT_NEED_MIB="${ROOT_NEED_MIB:-12000}"
 MIN_FREE_MIB="${MIN_FREE_MIB:-14000}"
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$LOCAL/cache}"
-export HF_HOME="${HF_HOME:-$LOCAL/hf_cache}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$STORE/cache}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$XDG_CACHE_HOME/uv}"
+export HF_HOME="${HF_HOME:-$STORE/hf_cache}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$XDG_CACHE_HOME/vllm}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$XDG_CACHE_HOME/triton}"
 export TOKENIZERS_PARALLELISM=false

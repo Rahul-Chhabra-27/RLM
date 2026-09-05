@@ -22,33 +22,53 @@ spend. Only serving your own model needs an environment.
 
 ## The four rules this project has to obey
 
-**1. `$HOME` is small, NFS-mounted and backed up nightly.** Code and condensed
-output only. torch + vLLM unpack to several GB and will hit
-`OSError: [Errno 122] Disk quota exceeded`. Worse, a large write to a stalled
-filer mount is uninterruptible (`hard,timeo=600` → D-state; Ctrl-C does nothing)
-and has taken `$HOME` down host-wide before.
+**1. Everything goes on the NAS. `$HOME` is capped at 30 GB.**
 
-`setup.sh` exports the redirections *before* any install runs, because doing it
-afterwards is useless — the wheels are already on the quota:
+A torch + vLLM install plus one model blows through it, and the failure arrives
+as `OSError: [Errno 122] Disk quota exceeded` mid-install. Worse, a large write
+to a stalled filer mount is uninterruptible (`hard,timeo=600` → D-state; Ctrl-C
+does nothing) and has taken `$HOME` down host-wide before.
+
+`setup.sh` exports every redirection **before** any install runs, because doing
+it afterwards is useless — the wheels are already on the quota:
 
 | Variable | Points at |
 |---|---|
-| `XDG_CACHE_HOME`, `PIP_CACHE_DIR` | `/mnt/$HOST/data/$USER/cache` |
-| `HF_HOME`, `TORCH_HOME` | `/mnt/$HOST/data/$USER/` |
-| `VLLM_CACHE_ROOT`, `TRITON_CACHE_DIR` | `/mnt/$HOST/data/$USER/cache` |
+| **`UV_CACHE_DIR`** | `$STORE/cache/uv` — **the one that bites**; uv's wheel cache is GB-scale and defaults to `~/.cache/uv` |
+| **`UV_PYTHON_INSTALL_DIR`** | `$STORE/share/uv/python` — uv downloads whole interpreters here if the host python is too old |
+| `PIP_CACHE_DIR` | `$STORE/cache/pip` |
+| `HF_HOME`, `HF_HUB_CACHE` | `$STORE/hf_cache` — ~8 GB per model |
+| `XDG_CACHE_HOME`, `XDG_DATA_HOME` | `$STORE/cache`, `$STORE/share` |
+| `TORCH_HOME`, `VLLM_CACHE_ROOT`, `TRITON_CACHE_DIR`, `TORCHINDUCTOR_CACHE_DIR` | `$STORE/cache/...` |
 
-**2. Envs go on host-local disk, not NFS.** Different hosts carry different
-NVIDIA/CUDA versions, so a venv built on `bee` is not guaranteed to work on
-`dog`. `/mnt/$(hostname -s)/data/$USER` keeps them separate by construction.
-Archival results go to `/mnt/nas/$USER` (backed up ~monthly).
+`bash setup.sh check` prints all of them and fails loudly if any resolves under
+`$HOME`. A single unset variable is all it takes.
 
-Override either: `RLMADP_LOCAL`, `RLMADP_ARCHIVE`.
+**2. The venv is per-host, even on shared storage.** Infolab hosts carry
+different NVIDIA/CUDA versions, so one venv cannot serve `bee` and `dog`.
+It lives at `$STORE/venv-$(hostname -s)`.
 
-**3. `exec newgrp infolab` first.** A script cannot do this for you — `newgrp`
+Layout, with `RLMADP_NAS` / `RLMADP_STORE` / `RLMADP_VENV` to override:
+
+```
+/mnt/nas/$USER/rlmadp/          <- $STORE  (100 GB allocation)
+├── venv-bee/  venv-dog/ ...    <- per host
+├── cache/{uv,pip,torch,vllm,triton,inductor}
+├── share/uv/python
+├── hf_cache/hub                <- model weights
+└── results/                    <- run output
+```
+
+**3. Prefer `uv`.** `setup.sh serve` uses `uv venv` and `uv pip install` when
+available — same resolution, far faster, and it honours `UV_CACHE_DIR`. It falls
+back to `python3 -m venv` and, if that host's Debian python lacks `ensurepip`,
+to `venv --without-pip` plus a `get-pip.py` bootstrap.
+
+**4. Groups.** A script cannot do this for you — `newgrp`
 replaces the shell. Without it your files land with the wrong primary group and
 collaborators cannot read them. `setup.sh check` warns if you forgot.
 
-**4. The GPUs are shared and unreserved.** No scheduler, nothing restarts a dead
+**5. The GPUs are shared and unreserved.** No scheduler, nothing restarts a dead
 run, and a card idle at login may be full by the time you serve.
 `run_info.sh serve` re-checks free memory immediately before binding, picks the
 emptiest card by live utilisation, and sizes `--gpu-memory-utilization` from
