@@ -74,34 +74,10 @@ case "$1" in
 check)
     echo "== rlmadp environment audit on $HOST =="
     echo
-    echo "identity"
-    # Two DIFFERENT things, routinely conflated:
-    #   membership (id -Gn)  -> what you can READ. Fixed by your advisor.
-    #   primary group (id -gn) -> the group stamped on files you CREATE.
-    # Only the second is what `newgrp` changes, and it only matters at write
-    # time. For a user in several groups a blanket `newgrp infolab` is actively
-    # wrong: it also stamps infolab on files you create in another group's
-    # space, which can lock that group's collaborators out.
-    PRIMARY="$(id -gn)"
-    GROUPS_ALL="$(id -Gn)"
-    echo "        member of: $GROUPS_ALL"
-    echo "        primary  : $PRIMARY   (group stamped on files you create)"
-
-    case " $GROUPS_ALL " in
-    *" infolab "*)
-        if [ "$PRIMARY" = "infolab" ]; then
-            ok "in infolab, and it is your primary group"
-        else
-            ok "in infolab (read access is fine)"
-            echo "        New files get group '$PRIMARY'. That only matters in the shared"
-            echo "        trees checked below -- see the setgid column there."
-        fi
-        ;;
-    *)
-        bad "not a member of infolab -- ask your advisor to add you"
-        ;;
+    case " $(id -Gn) " in
+    *" infolab "*) ok "infolab member (groups: $(id -Gn))" ;;
+    *) bad "not a member of infolab -- ask your advisor to add you" ;;
     esac
-
     echo
     echo "python"
     PYV=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo none)
@@ -119,21 +95,7 @@ check)
         dir="${pair%%:*}"; what="${pair#*:}"
         if [ -d "$dir" ] && [ -w "$dir" ]; then
             # -c is GNU (the infolab hosts), -f is BSD (a mac running check).
-            dgrp=$(stat -c '%G' "$dir" 2>/dev/null || stat -f '%Sg' "$dir" 2>/dev/null || echo '?')
-            # A setgid directory (drwxrws---) forces every file created inside
-            # it to inherit the DIRECTORY's group, overriding your primary
-            # group entirely. Where it is set, `newgrp` is unnecessary; where
-            # it is not, your primary group decides and you must either newgrp
-            # before writing here or `chmod g+s` the directory you own.
-            if [ -g "$dir" ]; then
-                sg="setgid -> new files inherit group '$dgrp' (no newgrp needed)"
-            elif [ "$PRIMARY" = "$dgrp" ]; then
-                sg="no setgid, but your primary group already matches '$dgrp'"
-            else
-                sg="NO setgid: new files here get '$PRIMARY', not '$dgrp'"
-            fi
             ok "$dir  -- $what   [$(df -BG "$dir" 2>/dev/null | awk 'NR==2{print $4" free"}')]"
-            echo "        group $dgrp | $sg"
         elif [ -d "$dir" ]; then
             warn "$dir exists but is not writable -- $what"
         else
