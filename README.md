@@ -31,6 +31,7 @@ its context, so degradation is decoupled from document length.
 | `rlmadp/deepdive.py` | Shows the data crossing each boundary: REPL creation, sub-call spawn |
 | `rlmadp/guards_demo.py` | Shows the two guards *rejecting* bad endings |
 | `setup.sh`, `run_info.sh` | Infolab-cluster bootstrap and runner — see `INFOLAB.md` |
+| `notebooks/rlm_rajputana.py` | marimo notebook — runs on [molab](https://molab.marimo.io) with no setup |
 
 Read `rlm.py` in this order: `ROOT_SYSTEM_PROMPT` → `RLM._build_env` → `RLM.run`.
 
