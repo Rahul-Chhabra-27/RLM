@@ -52,6 +52,13 @@ export UV_CACHE_DIR="${UV_CACHE_DIR:-$XDG_CACHE_HOME/uv}"
 export HF_HOME="${HF_HOME:-$STORE/hf_cache}"
 export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$XDG_CACHE_HOME/vllm}"
+# vLLM writes anonymous usage stats to ~/.config/vllm from a background thread.
+# On a full $HOME that throws OSError 122 mid-startup -- non-fatal, but it is
+# noise in the log and a write to a quota this project is trying to keep clear.
+# There is no reason for a lab cluster run to phone home either.
+export VLLM_CONFIG_ROOT="${VLLM_CONFIG_ROOT:-$STORE/config}"
+export VLLM_NO_USAGE_STATS="${VLLM_NO_USAGE_STATS:-1}"
+export VLLM_DO_NOT_TRACK="${VLLM_DO_NOT_TRACK:-1}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$XDG_CACHE_HOME/triton}"
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1

@@ -57,6 +57,13 @@ export HF_HOME="${HF_HOME:-$STORE/hf_cache}"
 export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
 export TORCH_HOME="${TORCH_HOME:-$XDG_CACHE_HOME/torch}"
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$XDG_CACHE_HOME/vllm}"
+# vLLM writes anonymous usage stats to ~/.config/vllm from a background thread.
+# On a full $HOME that throws OSError 122 mid-startup -- non-fatal, but it is
+# noise in the log and a write to a quota this project is trying to keep clear.
+# There is no reason for a lab cluster run to phone home either.
+export VLLM_CONFIG_ROOT="${VLLM_CONFIG_ROOT:-$STORE/config}"
+export VLLM_NO_USAGE_STATS="${VLLM_NO_USAGE_STATS:-1}"
+export VLLM_DO_NOT_TRACK="${VLLM_DO_NOT_TRACK:-1}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$XDG_CACHE_HOME/triton}"
 export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$XDG_CACHE_HOME/inductor}"
 export TOKENIZERS_PARALLELISM=false
@@ -120,7 +127,7 @@ check)
     leaked=0
     for v in UV_CACHE_DIR UV_PYTHON_INSTALL_DIR PIP_CACHE_DIR HF_HOME HF_HUB_CACHE \
              XDG_CACHE_HOME XDG_DATA_HOME TORCH_HOME VLLM_CACHE_ROOT \
-             TRITON_CACHE_DIR TORCHINDUCTOR_CACHE_DIR; do
+             TRITON_CACHE_DIR TORCHINDUCTOR_CACHE_DIR VLLM_CONFIG_ROOT; do
         eval "val=\${$v:-}"
         case "$val" in
         "$HOME"/* | "$HOME") printf '    %-24s %s   <-- LEAKS TO $HOME\n' "$v" "$val"; leaked=1 ;;

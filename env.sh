@@ -23,6 +23,13 @@ export HF_HOME="${HF_HOME:-$RLMADP_STORE/hf_cache}"
 export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
 export TORCH_HOME="${TORCH_HOME:-$XDG_CACHE_HOME/torch}"
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$XDG_CACHE_HOME/vllm}"
+# vLLM writes anonymous usage stats to ~/.config/vllm from a background thread.
+# On a full $HOME that throws OSError 122 mid-startup -- non-fatal, but it is
+# noise in the log and a write to a quota this project is trying to keep clear.
+# There is no reason for a lab cluster run to phone home either.
+export VLLM_CONFIG_ROOT="${VLLM_CONFIG_ROOT:-$RLMADP_STORE/config}"
+export VLLM_NO_USAGE_STATS="${VLLM_NO_USAGE_STATS:-1}"
+export VLLM_DO_NOT_TRACK="${VLLM_DO_NOT_TRACK:-1}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$XDG_CACHE_HOME/triton}"
 export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$XDG_CACHE_HOME/inductor}"
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
@@ -52,6 +59,7 @@ _rlmadp_off_home XDG_CACHE_HOME           "$RLMADP_STORE/cache"
 _rlmadp_off_home XDG_DATA_HOME            "$RLMADP_STORE/share"
 _rlmadp_off_home TORCH_HOME               "$XDG_CACHE_HOME/torch"
 _rlmadp_off_home VLLM_CACHE_ROOT          "$XDG_CACHE_HOME/vllm"
+_rlmadp_off_home VLLM_CONFIG_ROOT         "$RLMADP_STORE/config"
 _rlmadp_off_home TRITON_CACHE_DIR         "$XDG_CACHE_HOME/triton"
 _rlmadp_off_home TORCHINDUCTOR_CACHE_DIR  "$XDG_CACHE_HOME/inductor"
 unset -f _rlmadp_off_home 2>/dev/null || true
