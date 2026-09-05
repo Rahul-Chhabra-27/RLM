@@ -115,8 +115,15 @@ resolve_results() {
     if [ -d "$ARCHIVE" ] && [ -w "$ARCHIVE" ]; then
         return
     fi
+    # $ARCHIVE not existing YET is the normal first-run case, not a reason to
+    # fall back: if its parent store is writable, just create it. The fallback
+    # below is only for a machine with no NAS at all (a laptop), where
+    # `mkdir -p` on a missing /mnt path fails and, under `set -e`, killed the
+    # whole run instead of running it.
+    if mkdir -p "$ARCHIVE" 2>/dev/null && [ -w "$ARCHIVE" ]; then
+        return
+    fi
     echo "note: $ARCHIVE not available; writing results to ./results instead." >&2
-    echo "  On an infolab host, set RLMADP_ARCHIVE to keep output off the \$HOME quota." >&2
     RESULTS="$REPO/results"
     LOGS="$RESULTS/logs"
 }
