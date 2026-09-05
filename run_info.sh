@@ -143,8 +143,8 @@ cli_flags() {
     return 0
 }
 
-case "${1:-}" in auto | offline | serve | run | sweep | trace | guards | deepdive) ;;
-*) echo "usage: $0 {auto|offline|serve|run|sweep|trace|guards|deepdive}" >&2; exit 2 ;;
+case "${1:-}" in auto | offline | serve | run | sweep | trace | guards | deepdive | slices) ;;
+*) echo "usage: $0 {auto|offline|serve|run|sweep|trace|guards|deepdive|slices}" >&2; exit 2 ;;
 esac
 cd "$REPO"
 
@@ -211,6 +211,12 @@ offline)
 trace)
     echo "== per-function trigger log =="
     python3 -m rlmadp.tracing
+    ;;
+
+slices)
+    # Where each sub-call cut, and which earlier answer supplied the index.
+    echo "== slice geometry =="
+    python3 -m rlmadp.slices
     ;;
 
 deepdive)
