@@ -28,6 +28,7 @@ its context, so degradation is decoupled from document length.
 | `rlmadp/llm.py` | Model seams: a real OpenAI-compatible client, plus an offline stand-in |
 | `rlmadp/cli.py` | CLI demo |
 | `rlmadp/tracing.py` | Logs every trigger point in `rlm.py`, in firing order |
+| `rlmadp/deepdive.py` | Shows the data crossing each boundary: REPL creation, sub-call spawn |
 | `rlmadp/guards_demo.py` | Shows the two guards *rejecting* bad endings |
 | `setup.sh`, `run_info.sh` | Infolab-cluster bootstrap and runner — see `INFOLAB.md` |
 
@@ -42,6 +43,7 @@ cd ~/Desktop/rlmadp
 
 python3 -m rlmadp.cli               # offline trace, no GPU, ~1 second
 python3 -m rlmadp.tracing           # which function fires when
+python3 -m rlmadp.deepdive          # what data crosses each boundary
 python3 -m rlmadp.guards_demo       # watch the guards reject bad answers
 python3 -m rlmadp.cli --chars 3000  # starve the slices; it abstains honestly
 

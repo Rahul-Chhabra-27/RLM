@@ -6,6 +6,7 @@
 #   bash run_info.sh run                      # RLM against that server
 #   bash run_info.sh sweep                    # chunk-size sweep
 #   bash run_info.sh trace                    # per-function trigger log
+#   bash run_info.sh deepdive                 # what data crosses each boundary
 #
 # ALWAYS UNDER TMUX. These hosts have no scheduler: nothing restarts a dead run,
 # and an ssh drop kills both the server and the worker.
@@ -51,8 +52,8 @@ export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$XDG_CACHE_HOME/triton}"
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 
-case "${1:-}" in offline | serve | run | sweep | trace | guards) ;;
-*) echo "usage: $0 {offline|serve|run|sweep|trace|guards}" >&2; exit 2 ;;
+case "${1:-}" in offline | serve | run | sweep | trace | guards | deepdive) ;;
+*) echo "usage: $0 {offline|serve|run|sweep|trace|guards|deepdive}" >&2; exit 2 ;;
 esac
 cd "$REPO"
 
@@ -108,6 +109,13 @@ offline)
 trace)
     echo "== per-function trigger log =="
     python3 -m rlmadp.tracing
+    ;;
+
+deepdive)
+    # What data crosses which boundary: REPL creation, what the root is told,
+    # and both sides of every sub-call.
+    echo "== boundary trace =="
+    python3 -m rlmadp.deepdive
     ;;
 
 guards)
