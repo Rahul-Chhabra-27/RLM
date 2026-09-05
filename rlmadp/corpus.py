@@ -127,3 +127,54 @@ if __name__ == "__main__":
     print(f"document: {len(doc):,} chars")
     for k, v in offsets.items():
         print(f"  {k:22s} at char {v:,}  ({v / len(doc):.1%} through)")
+
+
+# --- Aggregation task ---------------------------------------------------------
+#
+# The multi-hop task above is findable: three greps and three reads, ~4% of the
+# document. That demonstrates the mechanism but understates the method, because
+# a plain retriever could nearly solve it.
+#
+# This one cannot be searched at all. The answer is a property of the WHOLE
+# document, so the root has no choice but to partition and map -- sweep every
+# slice, ask each the same narrow question, and combine the replies in Python.
+# Coverage stops being 4% and becomes the task: miss a slice, miss its count.
+#
+# The ground truth is exact because the filler is generated, so a run can be
+# scored rather than eyeballed.
+
+DEFEAT_VERBS = {"withdrew before", "made submission to"}
+TARGET_HOUSE = "Sisodia"
+
+TASK_COUNT = (
+    f"Across the whole chronicle, count how many times a chief of the "
+    f"{TARGET_HOUSE} house suffers a reverse -- that is, either 'withdrew "
+    f"before' or 'made submission to' another chief. Answer with a single "
+    f"number and nothing else."
+)
+
+
+def build_aggregation(target_chars: int = 3_000_000, seed: int = 11) -> tuple[str, int]:
+    """Return (document, exact_count) for the sweep task."""
+    rng = random.Random(seed)
+    parts = ["ANNALS AND ANTIQUITIES OF RAJASTHAN -- CLAN REGISTER\n\n"]
+    size = len(parts[0])
+    count = 0
+    while size < target_chars:
+        sents = []
+        for _ in range(40):
+            title = rng.choice(_TITLES)
+            name = rng.choice(_NAMES)
+            house = rng.choice(_HOUSES)
+            verb = rng.choice(_VERBS)
+            place = rng.choice(_PLACES)
+            tail = rng.choice(_TAILS)
+            if house == TARGET_HOUSE and verb in DEFEAT_VERBS:
+                count += 1
+            sents.append(
+                f"{title} {name} of the {house} house {verb} the chief of {place}, {tail}."
+            )
+        chunk = " ".join(sents) + "\n\n"
+        parts.append(chunk)
+        size += len(chunk)
+    return "".join(parts), count

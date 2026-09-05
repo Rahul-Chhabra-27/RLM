@@ -51,19 +51,29 @@ TOOLS
     context : str
         The full document. Slice it, search it, count it -- all free.
 
-    llm_query(question: str, text: str) -> str
-        Ask a FRESH sub-model a question about a piece of text. The sub-model
-        CANNOT see `context` or any of your variables -- it sees ONLY the two
-        strings you pass. Pass the question first and the document slice
-        second:  ans = llm_query("Who founded X?", context[i:j])
+    llm_query(question: str, text: str, recurse: bool = False) -> str
+        Ask a FRESH sub-model a question about a piece of text. It CANNOT see
+        `context` or any of your variables -- only the two strings you pass:
+            ans = llm_query("Who founded X?", context[i:j])
         Each slice may be up to {chunk_chars:,} characters. Prefer FEW, LARGE
-        slices over many small ones: a slice of {chunk_chars:,} chars costs one
-        call, and so does a slice of 500. You have {max_sub_calls} calls total.
+        slices: a slice of {chunk_chars:,} chars costs one call, and so does a
+        slice of 500. You have {max_sub_calls} calls total, shared with any
+        recursive calls below.
+
+        recurse=True spawns a nested agent with its OWN REPL over that slice,
+        instead of one plain read. Use it when the slice is still too big to
+        answer in one pass, or when answering it needs its own searching.
+        Costs more than one call. Default False is right most of the time.
 
     FINAL(value)
         Commit to the answer and stop. The value must be something your code
         actually COMPUTED or something you actually SAW in REPL output.
         FINAL with a guessed literal will be REJECTED.
+
+    FINAL_VAR("name")
+        Answer with the contents of a REPL variable. Use this when you have
+        BUILT the answer up across turns -- a list, a dict, a count -- instead
+        of retyping it into FINAL and risking a typo.
 
     FINAL_NONE(reason)
         The document genuinely does not contain the answer. Legitimate, and
@@ -83,10 +93,45 @@ HOW TO SEARCH
     loose pattern, print the text around a near-miss to see the real format,
     then retry.
 
-MULTI-HOP
-    If the answer requires chaining facts, do them one at a time. The answer
-    to hop 1 becomes the SEARCH TERM for hop 2. You cannot search for hop 2
-    until hop 1 has come back.
+MULTI-HOP -- ONE HOP PER CALL
+    If the answer chains facts, you must do them ONE AT A TIME. Never put the
+    whole question into a single llm_query: the slice that holds hop 1 does not
+    hold hop 2, so the sub-model correctly answers NOT FOUND and you learn
+    nothing. Ask ONLY for the next unknown, then use the answer you get back as
+    the SEARCH TERM for the hop after it. Worked shape:
+
+        # hop 1 -- ask only for the minister's NAME
+        m = re.search(r"minister", context, re.I)
+        who = llm_query("Which minister is named here? Name only.",
+                        context[max(0, m.start()-20000): m.start()+20000])
+        print(who)                       # -> "Bhama Shah"
+
+        # hop 2 -- that NAME is a search term you did not have a moment ago
+        hits = [h.start() for h in re.finditer(r"bhama\\s*shah", context, re.I)]
+        where = llm_query("What capital is named here?",
+                          context[hits[-1]-20000: hits[-1]+20000])
+        print(where)                     # -> "Chavand"
+
+        # hop 3 -- and so on, each answer unlocking the next search
+
+PARTITION AND MAP
+    When the question is about the WHOLE document -- a count, a total, "how
+    many", "list all" -- searching cannot answer it. Sweep instead: cut the
+    document into slices of {chunk_chars:,}, ask each the same narrow question,
+    and combine the replies yourself in Python.
+
+        step = {chunk_chars:,}
+        found = []
+        for i in range(0, len(context), step):
+            r = llm_query("List every X in this text, one per line. "
+                          "Reply NONE if there are none.", context[i:i+step])
+            if "NONE" not in r:
+                found.extend(r.strip().splitlines())
+        print(len(found))
+        FINAL_VAR("found")
+
+    Watch your call budget: len(context)/step slices may exceed it, in which
+    case sample and say so rather than silently covering part of the document.
 
 You have at most {max_steps} turns. Be efficient.
 
@@ -168,6 +213,7 @@ class RLMResult:
     end: str = "ok"  # ok | abstained | out_of_steps | error
     steps: int = 0
     sub_calls: int = 0
+    recursive_calls: int = 0
     sub_not_found: int = 0
     chars_read: int = 0
     coverage: float = 0.0
@@ -186,6 +232,9 @@ class RLM:
         chunk_chars: int = 40_000,
         obs_limit: int = 2_000,
         verbose: bool = True,
+        max_depth: int = 1,
+        depth: int = 0,
+        budget: Optional[dict] = None,
     ):
         # `root` and `sub` are just functions. Anything that maps messages ->
         # string works: an OpenAI client, a local vLLM server, a fake. Keeping
@@ -197,6 +246,19 @@ class RLM:
         self.chunk_chars = chunk_chars
         self.obs_limit = obs_limit
         self.verbose = verbose
+        # RECURSION (Zhang, Kraska & Khattab 2025, arXiv:2512.24601).
+        # `depth` is this instance's level: the root is 0. `max_depth` is how
+        # far down llm_query(..., recurse=True) may spawn a NESTED RLM -- a
+        # sub-instance with its own REPL over its own slice -- instead of a
+        # plain one-shot LM call. The paper runs depth 1 (root + one level of
+        # sub-instances) in all its experiments; the architecture is not
+        # limited to that, so this is a parameter rather than a constant.
+        self.max_depth = max_depth
+        self.depth = depth
+        # Shared across the whole recursion tree. A per-instance counter would
+        # let a root with 8 calls spawn 8 children with 8 calls each and pay
+        # for 64 -- the budget has to be global or it is not a budget.
+        self.budget = budget
 
     # ------------------------------------------------------------------ env
     def _build_env(self, document: str, state: dict) -> dict:
@@ -228,13 +290,23 @@ class RLM:
                 merged += cur_e - cur_s
             state["coverage"] = merged / len(document) if document else 0.0
 
-        def llm_query(question: str, text: Optional[str] = None) -> str:
-            """Spawn a fresh sub-model on a slice of the document.
+        def llm_query(question: str, text: Optional[str] = None,
+                      recurse: bool = False) -> str:
+            """Ask about a slice: one-shot sub-model, or a nested RLM.
 
-            THIS is the recursion. Note what it does NOT do: it does not pass
-            `document`, the root's transcript, or any variable. The sub-model
-            gets two strings and nothing else, so its context window is clean
-            no matter how long the run has been going.
+            Note what it does NOT pass: `document`, the root's transcript, any
+            variable. The callee gets two strings and nothing else, so its
+            context is clean no matter how long this run has been going.
+
+            recurse=False (default) -- one LM call over the slice. Cheap, and
+                right when the slice fits comfortably and the question is
+                answerable by reading it.
+            recurse=True -- spawn a CHILD RLM whose whole document IS the
+                slice: its own REPL, its own turns, its own sub-calls. Use it
+                when the slice is still too big to read in one pass, or when
+                answering needs its own search. This is the recursion in
+                "Recursive Language Models"; it is what makes the depth
+                parameter mean anything.
             """
             question = str(question)
             text = None if text is None else str(text)
@@ -247,6 +319,13 @@ class RLM:
                 state["cache_hits"] += 1
                 return cache[key]
 
+            # Budget is shared across the whole tree (see __init__).
+            if self.budget is not None and self.budget["used"] >= self.budget["limit"]:
+                return (
+                    "[SUB-CALL LIMIT REACHED] The shared recursion budget is "
+                    "exhausted. Answer from what you have already seen, or use "
+                    "plain string operations on `context`."
+                )
             if state["sub_calls"] >= self.max_sub_calls:
                 # Degrade to a message rather than raising: the root can still
                 # finish from what it has already seen.
@@ -284,8 +363,37 @@ class RLM:
                     _record_span(start, start + len(text))
                 state["chars_read"] += len(text)
 
-            answer = self.sub(question, text)
+            if recurse and text and self.depth < self.max_depth:
+                # A nested RLM over this slice. Same callables, depth+1, and
+                # the SAME budget dict, so the tree cannot outspend the root.
+                child = RLM(
+                    self.root, self.sub,
+                    max_steps=self.max_steps,
+                    max_sub_calls=self.max_sub_calls,
+                    chunk_chars=self.chunk_chars,
+                    obs_limit=self.obs_limit,
+                    verbose=self.verbose,
+                    max_depth=self.max_depth,
+                    depth=self.depth + 1,
+                    budget=self.budget,
+                )
+                if self.verbose:
+                    print(f"      {'  ' * (self.depth + 1)}[depth {child.depth} RLM "
+                          f"over {len(text):,} chars]")
+                child_result = child.run(text, question)
+                state["recursive_calls"] = state.get("recursive_calls", 0) + 1
+                state["child_sub_calls"] = (
+                    state.get("child_sub_calls", 0) + child_result.sub_calls)
+                answer = (
+                    child_result.answer
+                    if child_result.answer is not None
+                    else f"NOT FOUND ({child_result.reason or child_result.end})"
+                )
+            else:
+                answer = self.sub(question, text)
             state["sub_calls"] += 1
+            if self.budget is not None:
+                self.budget["used"] += 1
             # A sub-call that read the WRONG region is not an error -- it is the
             # normal cost of searching. But a run whose answer is right while
             # most sub-calls came back empty did not earn that answer, so count
@@ -312,7 +420,7 @@ class RLM:
             state["abstained"] = True
             state["done"] = True
 
-        return {
+        env: dict = {
             "context": document,
             "llm_query": llm_query,
             "FINAL": FINAL,
@@ -320,6 +428,27 @@ class RLM:
             "re": re,
             "__builtins__": __builtins__,
         }
+
+        def FINAL_VAR(name: str) -> None:
+            """Answer with the CONTENTS of a REPL variable, named in the paper.
+
+            The point is assembled answers: a partition+map run builds a list
+            or a dict across many sub-calls, and pasting that back through
+            FINAL(f"...") both wastes tokens and invites the model to retype
+            (and mistype) what it computed. Raising on a missing name matters --
+            answering "<missing var x>" would be recorded as a successful
+            prediction.
+            """
+            key = str(name)
+            if key not in env:
+                raise NameError(
+                    f"FINAL_VAR({key!r}): no variable named {key!r} in the REPL. "
+                    "Assign it first, or call FINAL(<expression>)."
+                )
+            FINAL(env[key])
+
+        env["FINAL_VAR"] = FINAL_VAR
+        return env
 
     # ------------------------------------------------------------------ exec
     def _exec(self, code: str, env: dict) -> str:
@@ -347,11 +476,15 @@ class RLM:
             "done": False,
             "abstained": False,
             "sub_calls": 0,
+            "recursive_calls": 0,
             "sub_not_found": 0,
             "cache_hits": 0,
             "chars_read": 0,
             "coverage": 0.0,
         }
+        # The root owns the tree's budget; children inherit the same dict.
+        if self.budget is None and self.depth == 0:
+            self.budget = {"used": 0, "limit": self.max_sub_calls}
         env = self._build_env(document, state)
 
         system = ROOT_SYSTEM_PROMPT.format(
@@ -437,6 +570,7 @@ class RLM:
             result.end = "out_of_steps"
 
         result.sub_calls = state["sub_calls"]
+        result.recursive_calls = state.get("recursive_calls", 0)
         result.sub_not_found = state["sub_not_found"]
         result.chars_read = state["chars_read"]
         result.coverage = state["coverage"]

@@ -14,8 +14,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rlmadp"
-version = "0.1.0"
-description = "A minimal Recursive Language Model: the document is a REPL variable, not a prompt"
+version = "0.2.0"
+description = "A minimal Recursive Language Model (Zhang, Kraska & Khattab, arXiv:2512.24601)"
 readme = "README.md"
 # 3.9 is the floor: dataclasses (3.7), `from __future__ import annotations`
 # (3.7) and no match/walrus anywhere. Several infolab hosts still default to a
