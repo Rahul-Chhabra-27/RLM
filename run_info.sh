@@ -56,11 +56,18 @@ case "${1:-}" in offline | serve | run | sweep | trace | guards) ;;
 esac
 cd "$REPO"
 
-warn_home() {
-    if [ ! -d "$ARCHIVE" ]; then
-        echo "WARNING: $ARCHIVE missing; results would land in \$HOME, which is a" >&2
-        echo "  small nightly-backed-up NFS quota. Set RLMADP_ARCHIVE or create it." >&2
+# Resolve where run output goes. On an infolab host $ARCHIVE exists and results
+# land there. Anywhere else -- a laptop, a host with no /mnt/nas -- fall back to
+# ./results rather than aborting: `mkdir -p` on a missing /mnt path fails, and
+# under `set -e` that killed `sweep` and `run` outright instead of running them.
+resolve_results() {
+    if [ -d "$ARCHIVE" ] && [ -w "$ARCHIVE" ]; then
+        return
     fi
+    echo "note: $ARCHIVE not available; writing results to ./results instead." >&2
+    echo "  On an infolab host, set RLMADP_ARCHIVE to keep output off the \$HOME quota." >&2
+    RESULTS="$REPO/results"
+    LOGS="$RESULTS/logs"
 }
 
 pick_gpu() {
@@ -133,7 +140,7 @@ serve)
     ;;
 
 run)
-    warn_home
+    resolve_results
     mkdir -p "$RESULTS"
     # The client is stdlib urllib, so this side needs no venv at all -- only the
     # SERVER does. Keeping them separate means a broken serve env never blocks
@@ -155,7 +162,7 @@ run)
 sweep)
     # The one measurement this repo is actually for: does a bigger slice buy a
     # better answer? Small slices break the hop chain and the run abstains.
-    warn_home
+    resolve_results
     mkdir -p "$RESULTS"
     OUT="$RESULTS/sweep.$HOST.$(date +%Y%m%d-%H%M%S).log"
     MODE=(--vllm --base-url "http://localhost:$PORT/v1" --model "$MODEL")
