@@ -81,10 +81,20 @@ GPU=1 bash run_info.sh serve            # window 1
 bash run_info.sh run                    # window 2
 ```
 
-`setup.sh serve` reports the host's driver version before installing, because
-the driver — not the wheel index — is what decides which vLLM actually works.
-It also appends the host's `/opt/nvidia/hpc_sdk/.../cuda/*/lib64` to
-`LD_LIBRARY_PATH` inside the venv's activate script.
+`setup.sh serve` follows the recipe the main kvpress/RLM campaign arrived at on
+these same hosts:
+
+| Step | Why |
+|---|---|
+| `uv venv`, else `venv`, else `--without-pip` + get-pip | not every host has uv, and some Debian pythons ship without ensurepip |
+| `vllm==0.8.5.post1` (pinned) | an unpinned resolve grabs a torch targeting newer CUDA than some infolab drivers accept — "driver too old" at init |
+| `transformers==4.51.3` **last** | 5.x removed `all_special_tokens_extended`, which vLLM 0.8.5 calls at tokenizer init; the server then dies ~5 min in with an error that reads like a GPU problem |
+| torch/CUDA/capability probe | verify the pins before burning GPU time |
+| `hf download $MODEL` | a cold ~8 GB pull inside vLLM's 15-min readiness window fails as "server never became ready", pointing at the wrong thing |
+| tokenizer probe | reproduces vLLM's exact init call, so an incompatible pin fails *now* |
+| `LD_LIBRARY_PATH` | appends the host's `/opt/nvidia/hpc_sdk/.../cuda/*/lib64` into the venv activate script |
+
+Override the pins with `VLLM_VERSION=` / `TRANSFORMERS_VERSION=`.
 
 A 4B root at `MAXLEN=16384` needs roughly 12 GB: ~8 GB of weights, KV for one
 sequence, ~2 GB of activations and overhead. **The root never holds the

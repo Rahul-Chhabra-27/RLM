@@ -28,6 +28,7 @@ LOCAL="${RLMADP_LOCAL:-/mnt/$HOST/data/$USER}"     # host-local scratch: envs, c
 ARCHIVE="${RLMADP_ARCHIVE:-/mnt/nas/$USER}"        # backed up ~monthly: results
 VENV="${RLMADP_VENV:-$LOCAL/rlmadp-venv}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODEL="${MODEL:-Qwen/Qwen3-4B-Instruct-2507}"
 
 ok()   { printf '  \033[32mok\033[0m    %s\n' "$*"; }
 warn() { printf '  \033[33mwarn\033[0m  %s\n' "$*"; }
@@ -174,27 +175,77 @@ serve)
     echo "  HF_HOME : $HF_HOME"
     df -BG "$LOCAL" | tail -1 | sed 's/^/  disk    : /'
 
+    # uv when the host has it; otherwise venv, with a get-pip bootstrap because
+    # some infolab Debian pythons ship without ensurepip.
     if [ ! -f "$VENV/bin/activate" ]; then
-        python3 -m venv "$VENV"
+        if command -v uv >/dev/null 2>&1; then
+            uv venv "$VENV"
+        else
+            python3 -m venv "$VENV" || {
+                python3 -m venv --without-pip "$VENV"
+                curl -sS https://bootstrap.pypa.io/get-pip.py | "$VENV/bin/python"
+            }
+        fi
     fi
     # shellcheck disable=SC1091
     source "$VENV/bin/activate"
     python -m pip install --upgrade pip wheel setuptools
 
-    # Driver first: vLLM/torch wheels are built against a CUDA version, and the
-    # host driver is the constraint that actually decides which wheel works.
     DRV=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)
     echo "  nvidia driver on $HOST: $DRV"
-    echo "  installing rlmadp[serve] -- if this resolves a vLLM that the driver"
-    echo "  rejects at runtime, pin an older one and re-run."
-    pip install -e "$REPO[serve]"
 
-    # The guide's CUDA note: point the loader at the host's hpc_sdk libraries.
+    # rlmadp itself has no dependencies; this is just the import path.
+    pip install -e "$REPO"
+
+    # PIN vLLM. An unpinned resolve grabs a build whose torch targets a newer
+    # CUDA than some infolab drivers accept, and it dies at init with "driver
+    # too old". 0.8.5.post1 is the version the existing Qwen3 numbers on these
+    # hosts were produced with, so results stay comparable.
+    pip install "vllm==${VLLM_VERSION:-0.8.5.post1}"
+
+    # PIN transformers LAST, so it wins over whatever vLLM pulled in.
+    # transformers 5.x removed `all_special_tokens_extended`, which vLLM 0.8.5
+    # still calls at tokenizer init -- the server then dies ~5 minutes into
+    # startup with an error that reads like a GPU or readiness problem.
+    pip install "transformers==${TRANSFORMERS_VERSION:-4.51.3}"
+
     NVDIR=$(ls -d /opt/nvidia/hpc_sdk/Linux_x86_64/*/cuda/*/lib64 2>/dev/null | tail -1 || true)
     if [ -n "$NVDIR" ]; then
         echo "export LD_LIBRARY_PATH=$NVDIR:\$LD_LIBRARY_PATH" >> "$VENV/bin/activate"
         ok "appended LD_LIBRARY_PATH=$NVDIR to the venv activate script"
     fi
+
+    # --- probe the seams HERE, where the error can name the fix --------------
+    python - <<'PYPROBE'
+import torch, transformers
+print(f"  torch {torch.__version__}, cuda {torch.version.cuda}, "
+      f"devices {torch.cuda.device_count()}")
+print("  capabilities:", {torch.cuda.get_device_capability(i)
+                          for i in range(torch.cuda.device_count())})
+print(f"  transformers {transformers.__version__}")
+PYPROBE
+
+    # Pre-fetch weights with a visible progress bar. Letting the first
+    # `vllm serve` pull ~8 GB inside its 15-minute readiness window fails as
+    # "server never became ready", which points at the wrong thing entirely.
+    echo "  pre-fetching $MODEL into $HF_HOME ..."
+    hf download "$MODEL" || huggingface-cli download "$MODEL"
+
+    # Reproduce the exact call vLLM makes at tokenizer init, so an incompatible
+    # pin is caught now rather than five minutes into a serve.
+    MODEL="$MODEL" python - <<'PYPROBE'
+import os, sys
+from transformers import AutoTokenizer
+model = os.environ["MODEL"]
+tok = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+if not hasattr(tok, "all_special_tokens_extended"):
+    sys.exit(
+        f"INCOMPATIBLE: {type(tok).__name__} has no `all_special_tokens_extended`, "
+        "which vLLM 0.8.5 calls at startup. Pin transformers==4.51.3 "
+        "(TRANSFORMERS_VERSION=... to override)."
+    )
+print(f"  tokenizer OK: {type(tok).__name__}, vocab {len(tok)}")
+PYPROBE
 
     echo
     ok "serve env ready. Activate with:  source $VENV/bin/activate"

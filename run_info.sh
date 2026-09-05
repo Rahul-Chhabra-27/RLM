@@ -140,11 +140,17 @@ serve)
     echo "gpu-memory-utilization=$FRAC  max-model-len=$MAXLEN"
     mkdir -p "$LOGS"
 
+    # --served-model-name pins the name in /v1/models to exactly $MODEL, so the
+    # readiness grep in `run` cannot be satisfied by a co-tenant's server that
+    # happens to hold the port. --enforce-eager -O0 skips torch.compile, which
+    # on these mixed sm_86/sm_89 hosts costs minutes of startup and has been the
+    # source of init failures that read as GPU problems.
     CUDA_VISIBLE_DEVICES="$GPU_IDX" vllm serve "$MODEL" \
+        --served-model-name "$MODEL" \
         --port "$PORT" \
         --max-model-len "$MAXLEN" \
         --gpu-memory-utilization "$FRAC" \
-        --disable-log-requests 2>&1 | tee "$LOGS/vllm.$HOST.$PORT.log"
+        --enforce-eager -O0 2>&1 | tee "$LOGS/vllm.$HOST.$PORT.log"
     ;;
 
 run)

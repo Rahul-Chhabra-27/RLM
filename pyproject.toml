@@ -33,9 +33,15 @@ dependencies = []
 # ("OSError: [Errno 122] Disk quota exceeded"). `setup.sh serve` puts the venv
 # and every cache on /mnt/$HOSTNAME/data/$USER.
 #
-# The vLLM pin is NOT pinned here on purpose: the working version depends on the
-# host's NVIDIA driver, and infolab hosts differ. `setup.sh serve` resolves it
-# against the local driver and reports what it chose.
+# These floors exist so `pip install .[serve]` is not silently broken, but they
+# are NOT the versions to use on the infolab cluster. `setup.sh serve` installs
+# vllm==0.8.5.post1 and then transformers==4.51.3 LAST, in that order, because:
+#   - an unpinned vLLM resolves to a build whose torch targets a newer CUDA than
+#     some infolab drivers accept ("driver too old" at init), and
+#   - transformers 5.x removed `all_special_tokens_extended`, which vLLM 0.8.5
+#     calls at tokenizer init, killing the server ~5 min into startup with an
+#     error that reads like a GPU problem.
+# Override with VLLM_VERSION= / TRANSFORMERS_VERSION=.
 serve = [
     "vllm>=0.8.5",
     "transformers>=4.51.3",
