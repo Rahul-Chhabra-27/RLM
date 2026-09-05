@@ -228,9 +228,18 @@ serve)
         echo "  installer: uv (cache $UV_CACHE_DIR)"
     else
         PIP="python -m pip"
-        python -m pip install --upgrade pip wheel setuptools
+        python -m pip install --upgrade pip
         echo "  installer: pip (cache $PIP_CACHE_DIR)"
     fi
+    # setuptools in BOTH branches. `uv venv` creates a venv WITHOUT setuptools
+    # (python -m venv seeds it), and triton's backend discovery imports every
+    # backend module at load time -- including backends/amd/driver.py, which
+    # does `from triton.runtime.build import _build`, which does
+    # `import setuptools`. Missing it, `import triton` raises
+    # ModuleNotFoundError, vLLM's rejection_sampler cannot import, and the
+    # engine core dies with "EngineCore failed to start" -- a message that
+    # points nowhere near a missing build dependency.
+    $PIP install setuptools wheel
 
     DRV=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)
     echo "  nvidia driver on $HOST: $DRV"
@@ -257,6 +266,10 @@ serve)
     fi
 
     # --- probe the seams HERE, where the error can name the fix --------------
+    # triton is imported unconditionally by vLLM's sampler; check it here rather
+    # than discovering it three minutes into a serve.
+    python -c "import triton; print(f'  triton {triton.__version__}')"
+
     python - <<'PYPROBE'
 import torch, transformers
 print(f"  torch {torch.__version__}, cuda {torch.version.cuda}, "
