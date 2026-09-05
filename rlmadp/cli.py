@@ -29,6 +29,10 @@ def main() -> None:
     ap.add_argument("--size", type=int, default=3_000_000, help="corpus size in characters")
     ap.add_argument("--chars", type=int, default=40_000, help="max chars per llm_query slice")
     ap.add_argument("--steps", type=int, default=12)
+    ap.add_argument("--obs-limit", type=int, default=2_000,
+                    help="chars of printed REPL output the root sees back. This "
+                         "is the information bottleneck: shrink it and the root "
+                         "keeps its slices but loses its view of them")
     ap.add_argument("--sub-calls", type=int, default=8)
     ap.add_argument("--max-tokens", type=int, default=3072,
                     help="root completion budget; too low truncates its code block")
@@ -64,7 +68,8 @@ def main() -> None:
         root, sub = llm.scripted_root(), llm.extractive_sub()
 
     agent = RLM(root, sub, max_steps=args.steps, max_sub_calls=args.sub_calls,
-                chunk_chars=args.chars, max_depth=args.max_depth)
+                chunk_chars=args.chars, max_depth=args.max_depth,
+                obs_limit=args.obs_limit)
     result = agent.run(document, task)
 
     print("\n" + "=" * 72)

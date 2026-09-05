@@ -36,6 +36,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SIZE="${SIZE:-3000000}"       # corpus characters
 CHARS="${CHARS:-40000}"       # max chars per llm_query slice
 STEPS="${STEPS:-12}"
+OBSLIMIT="${OBSLIMIT:-2000}"  # chars of REPL output the root sees back
 SUBCALLS="${SUBCALLS:-8}"
 TASK="${TASK:-hop}"           # hop = 3-hop chain | count = whole-document sweep
 MAXDEPTH="${MAXDEPTH:-1}"     # how deep llm_query(recurse=True) may nest
@@ -135,7 +136,8 @@ port_free() {
 # disagree about what a given environment variable means.
 cli_flags() {
     printf '%s\0' --size "$SIZE" --chars "$CHARS" --steps "$STEPS" \
-        --sub-calls "$SUBCALLS" --task "$TASK" --max-depth "$MAXDEPTH"
+        --sub-calls "$SUBCALLS" --task "$TASK" --max-depth "$MAXDEPTH" \
+        --obs-limit "$OBSLIMIT"
     [ -n "$SUBMODEL" ] && printf '%s\0' --sub-model "$SUBMODEL"
     [ -n "$COMPARE" ] && printf '%s\0' --compare
     return 0
