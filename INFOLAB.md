@@ -133,7 +133,8 @@ corpus can be 3 MB while the server is sized for a 16k window.
 | `run_info.sh offline` | – | – | full RLM run, scripted root |
 | `run_info.sh trace` | – | – | per-function trigger log |
 | `run_info.sh guards` | – | – | grounding + abstention guards |
-| `run_info.sh serve` | ✓ | ✓ | start the vLLM root server |
+| `run_info.sh auto` | ✓ | ✓ | server + run in ONE window, server shut down after |
+| `run_info.sh serve` | ✓ | ✓ | start the vLLM root server (stays up) |
 | `run_info.sh run` | – | – | RLM against that server (stdlib HTTP client) |
 | `run_info.sh sweep` | – | – | chunk-size sweep |
 

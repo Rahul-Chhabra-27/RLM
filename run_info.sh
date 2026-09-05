@@ -1,6 +1,7 @@
 #!/bin/bash
 # rlmadp on the CSE infolab hosts (ant/bee/cat/dog/elk/fox.cse.iitb.ac.in).
 #
+#   bash run_info.sh auto                     # server + run, ONE window
 #   bash run_info.sh offline                  # no GPU, no venv, ~1 second
 #   bash run_info.sh serve                    # start a vLLM root server
 #   bash run_info.sh run                      # RLM against that server
@@ -55,8 +56,54 @@ export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$XDG_CACHE_HOME/triton}"
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 
-case "${1:-}" in offline | serve | run | sweep | trace | guards | deepdive) ;;
-*) echo "usage: $0 {offline|serve|run|sweep|trace|guards|deepdive}" >&2; exit 2 ;;
+serve_on() {
+    # One place the vllm command lives, so `serve` and `auto` cannot drift apart.
+    local idx="$1" port="$2"
+    local free total frac
+    free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits -i "$idx")
+    total=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits -i "$idx")
+    [ "$free" -ge "$MIN_FREE_MIB" ] || {
+        echo "gpu $idx now has only ${free} MiB free (need $MIN_FREE_MIB)" >&2; return 1; }
+    # Ask for a FRACTION sized to what this server actually needs, not for the
+    # whole card. vLLM's default 0.9 would claim ~90% of a shared GPU and make
+    # the host unusable for co-tenants.
+    frac=$(awk -v need="$ROOT_NEED_MIB" -v tot="$total" 'BEGIN{
+        f = need / tot; if (f > 0.9) f = 0.9; if (f < 0.15) f = 0.15; printf "%.3f", f }')
+    echo "host $HOST  gpu $idx  free ${free}/${total} MiB  port $port" >&2
+    echo "gpu-memory-utilization=$frac  max-model-len=$MAXLEN" >&2
+    # --served-model-name pins the name in /v1/models so the readiness check
+    # cannot be satisfied by a co-tenant's server holding the port.
+    # --enforce-eager -O0 skips torch.compile, minutes of startup on these
+    # mixed sm_86/sm_89 hosts and a past source of init failures.
+    CUDA_VISIBLE_DEVICES="$idx" vllm serve "$MODEL" \
+        --served-model-name "$MODEL" \
+        --port "$port" \
+        --max-model-len "$MAXLEN" \
+        --gpu-memory-utilization "$frac" \
+        --enforce-eager -O0
+}
+
+wait_ready() {
+    # Poll until the server answers with OUR model name. A cold start loads ~8 GB
+    # of weights, so the wait is minutes, not seconds.
+    local port="$1" waited=0 limit="${READY_TIMEOUT:-900}"
+    while [ "$waited" -lt "$limit" ]; do
+        if curl -sf -m 5 "http://localhost:$port/v1/models" 2>/dev/null |
+                grep -qF "\"$MODEL\""; then
+            return 0
+        fi
+        sleep 5; waited=$((waited + 5))
+        [ $((waited % 60)) -eq 0 ] && echo "  ... waiting for :$port (${waited}s)" >&2
+    done
+    return 1
+}
+
+port_free() {
+    ! curl -sf -m 3 "http://localhost:$1/v1/models" >/dev/null 2>&1
+}
+
+case "${1:-}" in auto | offline | serve | run | sweep | trace | guards | deepdive) ;;
+*) echo "usage: $0 {auto|offline|serve|run|sweep|trace|guards|deepdive}" >&2; exit 2 ;;
 esac
 cd "$REPO"
 
@@ -132,32 +179,55 @@ guards)
 
 serve)
     activate_venv
-    GPU_IDX=$(pick_gpu)
-    FREE=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits -i "$GPU_IDX")
-    TOTAL=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits -i "$GPU_IDX")
-    echo "host $HOST  gpu $GPU_IDX  free ${FREE}/${TOTAL} MiB  model $MODEL  port $PORT"
-    [ "$FREE" -ge "$MIN_FREE_MIB" ] || {
-        echo "gpu $GPU_IDX now has only ${FREE} MiB free (need $MIN_FREE_MIB)" >&2; exit 1; }
-
-    # Ask for a FRACTION sized to what this server actually needs, not for the
-    # whole card. vLLM's default 0.9 would claim ~90% of a shared GPU and evict
-    # nobody -- it would simply make the host unusable for your co-tenants.
-    FRAC=$(awk -v need="$ROOT_NEED_MIB" -v tot="$TOTAL" 'BEGIN{
-        f = need / tot; if (f > 0.9) f = 0.9; if (f < 0.15) f = 0.15; printf "%.3f", f }')
-    echo "gpu-memory-utilization=$FRAC  max-model-len=$MAXLEN"
     mkdir -p "$LOGS"
+    serve_on "$(pick_gpu)" "$PORT" 2>&1 | tee "$LOGS/vllm.$HOST.$PORT.log"
+    ;;
 
-    # --served-model-name pins the name in /v1/models to exactly $MODEL, so the
-    # readiness grep in `run` cannot be satisfied by a co-tenant's server that
-    # happens to hold the port. --enforce-eager -O0 skips torch.compile, which
-    # on these mixed sm_86/sm_89 hosts costs minutes of startup and has been the
-    # source of init failures that read as GPU problems.
-    CUDA_VISIBLE_DEVICES="$GPU_IDX" vllm serve "$MODEL" \
-        --served-model-name "$MODEL" \
-        --port "$PORT" \
-        --max-model-len "$MAXLEN" \
-        --gpu-memory-utilization "$FRAC" \
-        --enforce-eager -O0 2>&1 | tee "$LOGS/vllm.$HOST.$PORT.log"
+auto)
+    # Server and run in ONE window: background the server, wait for it, run the
+    # client, then shut the server down. Use this unless you want the server to
+    # outlive the run (several runs against one load) -- then use serve + run.
+    activate_venv
+    resolve_results
+    mkdir -p "$LOGS" "$RESULTS"
+    GPU_IDX=$(pick_gpu)
+    port_free "$PORT" || { echo "port $PORT is already serving something" >&2; exit 1; }
+
+    SRV_LOG="$LOGS/vllm.$HOST.$PORT.log"
+    serve_on "$GPU_IDX" "$PORT" >"$SRV_LOG" 2>&1 &
+    SRV_PID=$!
+
+    # Two subtleties, both learned the hard way on these hosts:
+    #  1. after an INT trap runs, bash RESUMES the interrupted loop unless the
+    #     handler exits -- ^C looks acknowledged while the script polls forever;
+    #  2. $SRV_PID is the backgrounded subshell; killing it ORPHANS the vllm
+    #     child inside, which keeps the port and ~12 GB of GPU until someone
+    #     kills it by hand. pkill -P takes the children too.
+    # HUP as well as INT/TERM: a dropped ssh sends SIGHUP. tmux makes that
+    # unlikely; this makes it survivable, not fine.
+    cleanup() {
+        trap - EXIT INT TERM HUP
+        echo "shutting down server (pid $SRV_PID)" >&2
+        pkill -TERM -P "$SRV_PID" 2>/dev/null || true
+        kill "$SRV_PID" 2>/dev/null || true
+        exit "${1:-0}"
+    }
+    trap 'cleanup 130' INT TERM HUP
+    trap 'cleanup $?' EXIT
+
+    echo "server starting on gpu $GPU_IDX, port $PORT -- log: $SRV_LOG"
+    wait_ready "$PORT" || {
+        echo "server never became ready; see $SRV_LOG" >&2
+        tail -20 "$SRV_LOG" >&2
+        exit 1
+    }
+    echo "server ready. running the RLM ..."
+
+    OUT="$RESULTS/rlmadp.$HOST.$(date +%Y%m%d-%H%M%S).log"
+    python3 -m rlmadp.cli --vllm \
+        --base-url "http://localhost:$PORT/v1" --model "$MODEL" \
+        --size "$SIZE" --chars "$CHARS" --steps "$STEPS" --sub-calls "$SUBCALLS" \
+        2>&1 | tee "$OUT"
     ;;
 
 run)
