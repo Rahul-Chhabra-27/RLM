@@ -1,0 +1,69 @@
+# rlmadp -- a minimal Recursive Language Model.
+#
+# The core has ZERO runtime dependencies: `rlm.py` uses only ast, io, re,
+# contextlib and dataclasses, and `llm.py` speaks HTTP through urllib. That is
+# deliberate and worth protecting -- on the infolab hosts it means the offline
+# path needs no venv, no wheels, no proxy and no quota, and `python3 -m
+# rlmadp.cli` runs on a bare login shell. Only the OPTIONAL `serve` extra
+# (vLLM + torch, several GB) needs an environment, and that environment must
+# live on host-local disk, never in $HOME. See INFOLAB.md.
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rlmadp"
+version = "0.1.0"
+description = "A minimal Recursive Language Model: the document is a REPL variable, not a prompt"
+readme = "README.md"
+# 3.9 is the floor: dataclasses (3.7), `from __future__ import annotations`
+# (3.7) and no match/walrus anywhere. Several infolab hosts still default to a
+# Debian python older than 3.10, so do not raise this without checking
+# `python3 --version` on ant/bee/cat/dog/elk/fox first.
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Rahul Chhabra" }]
+keywords = ["long-context", "recursive-language-model", "rlm", "repl", "multi-hop"]
+dependencies = []
+
+[project.optional-dependencies]
+# Only needed to SERVE a root model locally. Never install this into $HOME:
+# torch + vLLM wheels unpack to several GB and will trip the NFS home quota
+# ("OSError: [Errno 122] Disk quota exceeded"). `setup.sh serve` puts the venv
+# and every cache on /mnt/$HOSTNAME/data/$USER.
+#
+# The vLLM pin is NOT pinned here on purpose: the working version depends on the
+# host's NVIDIA driver, and infolab hosts differ. `setup.sh serve` resolves it
+# against the local driver and reports what it chose.
+serve = [
+    "vllm>=0.8.5",
+    "transformers>=4.51.3",
+]
+dev = [
+    "pytest>=7",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+rlmadp = "rlmadp.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Rahul-Chhabra-27/rlmadp"
+
+[tool.setuptools]
+packages = ["rlmadp"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# S102 (exec) is the entire point of this project: the root model's code has to
+# run. E501 is handled by the formatter's line-length above.
+ignore = ["S102"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

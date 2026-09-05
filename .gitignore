@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Envs and caches live on host-local disk on the infolab cluster, never in the
+# checkout -- but guard against a stray local build anyway.
+rlmadp-venv/
+.cache/
+hf_cache/
+
+# Run output. Results belong on /mnt/nas/$USER, not in git.
+results/
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
