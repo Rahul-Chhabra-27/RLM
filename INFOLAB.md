@@ -79,6 +79,19 @@ of a shared card and make the host unusable for your co-tenants.
 order while CUDA defaults to `FASTEST_FIRST`, so without it the card you
 measured as idle is not the card CUDA hands you.
 
+## Working by hand
+
+`setup.sh` and `run_info.sh` export every cache redirection themselves. A bare
+shell does **not** — and `uv pip install` with `UV_CACHE_DIR` unset writes to
+`~/.cache/uv` and dies with `Disk quota exceeded (os error 122)` against the
+30 GB `$HOME` cap. Before any manual `uv` / `pip` / `python`:
+
+```bash
+source env.sh
+```
+
+That sets the same variables and activates this host's venv.
+
 ## Internet access
 
 Off by default on the compute hosts. Only needed for `setup.sh serve`.
