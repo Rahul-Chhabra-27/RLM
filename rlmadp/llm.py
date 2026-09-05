@@ -16,10 +16,20 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import urllib.request
 from typing import Callable, Optional
 
 # ---------------------------------------------------------------- real models
+
+
+# A server that silently drops most of a slice is the worst failure this project
+# has: the root locates the right region, the sub answers NOT FOUND, and nothing
+# reports an error. Ollama ships a 2048-token default window and truncates from
+# the FRONT, so a 40,000-char slice arrives as its last ~8,000 chars. English
+# prose runs ~4 chars/token and even dense text stays under ~6, so a server
+# reporting far more than that saw far less text than we sent.
+TRUNCATION_CHARS_PER_TOKEN = 8.0
 
 
 def openai_compatible(
@@ -28,12 +38,22 @@ def openai_compatible(
     api_key: str = "EMPTY",
     max_tokens: int = 1024,
     timeout: int = 180,
+    sub_model: Optional[str] = None,
 ) -> tuple[Callable, Callable]:
-    """Return (root_fn, sub_fn) speaking to any OpenAI-compatible endpoint."""
+    """Return (root_fn, sub_fn) speaking to any OpenAI-compatible endpoint.
 
-    def _chat(messages: list[dict], n_tokens: int) -> str:
+    `sub_model` defaults to `model`, but the two roles want different things.
+    The ROOT writes Python and follows a multi-step protocol, so it needs
+    instruction-following and code ability. The SUB only reads one slice and
+    answers one question, and it is called with a very large prompt -- so a
+    smaller, faster model there is usually the right trade.
+    """
+    sub_name = sub_model or model
+    warned = {"done": False}
+
+    def _chat(messages: list[dict], n_tokens: int, name: str) -> str:
         body = json.dumps(
-            {"model": model, "messages": messages, "max_tokens": n_tokens, "temperature": 0.0}
+            {"model": name, "messages": messages, "max_tokens": n_tokens, "temperature": 0.0}
         ).encode()
         req = urllib.request.Request(
             f"{base_url}/chat/completions",
@@ -41,10 +61,27 @@ def openai_compatible(
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())["choices"][0]["message"]["content"]
+            payload = json.loads(resp.read())
+
+        # Compare what we sent against what the server says it saw.
+        sent = sum(len(m["content"]) for m in messages)
+        seen = (payload.get("usage") or {}).get("prompt_tokens")
+        if seen and not warned["done"] and sent / seen > TRUNCATION_CHARS_PER_TOKEN:
+            warned["done"] = True
+            print(
+                f"\n  !! SERVER TRUNCATED THE PROMPT: sent {sent:,} chars, server "
+                f"counted {seen:,} tokens ({sent / seen:.1f} chars/token -- prose is ~4).\n"
+                f"     Its context window is too small and it dropped the FRONT of the\n"
+                f"     slice. Results below are meaningless. For ollama, restart it as:\n"
+                f"       OLLAMA_CONTEXT_LENGTH=32768 ollama serve\n"
+                f"     or bake it in:  ollama create {name}-32k -f <Modelfile with\n"
+                f"       PARAMETER num_ctx 32768>\n",
+                file=sys.stderr,
+            )
+        return payload["choices"][0]["message"]["content"]
 
     def root(messages: list[dict]) -> str:
-        return _chat(messages, max_tokens)
+        return _chat(messages, max_tokens, model)
 
     def sub(question: str, text: Optional[str]) -> str:
         # The sub gets a FRESH message list every time. No history, no
@@ -60,6 +97,7 @@ def openai_compatible(
                 {"role": "user", "content": prompt},
             ],
             192,  # sub answers must be SHORT -- they go back into the root's context
+            sub_name,
         )
 
     return root, sub

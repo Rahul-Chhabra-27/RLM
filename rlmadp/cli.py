@@ -17,7 +17,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--vllm", action="store_true", help="use a real OpenAI-compatible server")
     ap.add_argument("--base-url", default="http://localhost:8000/v1")
-    ap.add_argument("--model", default="Qwen/Qwen3-4B-Instruct-2507")
+    ap.add_argument("--model", default="Qwen/Qwen3-4B-Instruct-2507",
+                    help="root model: writes the REPL code, needs instruction-following")
+    ap.add_argument("--sub-model", default=None,
+                    help="sub model (default: same as --model). Only reads one slice "
+                         "and answers one question, so a smaller one is usually fine")
     ap.add_argument("--size", type=int, default=3_000_000, help="corpus size in characters")
     ap.add_argument("--chars", type=int, default=40_000, help="max chars per llm_query slice")
     ap.add_argument("--steps", type=int, default=12)
@@ -31,7 +35,7 @@ def main() -> None:
     print(f"\ntask: {corpus.TASK}\n" + "=" * 72)
 
     if args.vllm:
-        root, sub = llm.openai_compatible(args.base_url, args.model)
+        root, sub = llm.openai_compatible(args.base_url, args.model, sub_model=args.sub_model)
     else:
         print("[offline mode: scripted root + extractive sub -- machinery only]")
         print("[the root REPLAYS a fixed transcript, so it cannot react to a failed]")
